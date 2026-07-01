@@ -1,11 +1,12 @@
 package com.machinewarfare.model;
 
 import com.machinewarfare.engine.Position;
+import lombok.NoArgsConstructor;
 
+@NoArgsConstructor // Added for Jackson deserialization
 public class DroneMech extends Machine {
-
     public DroneMech(String id, Position position) {
-        super(id, 60, position, false); // Drones are agile but fragile (60 HP)
+        super(id, 60, position, false);
     }
 
     @Override
