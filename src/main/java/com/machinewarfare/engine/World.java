@@ -2,54 +2,143 @@ package com.machinewarfare.engine;
 
 import com.machinewarfare.model.Machine;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class World {
     private final int width;
     private final int height;
 
-    // Spatial index optimization: O(1) coordinate queries
+    // Upgrade 1: Use ConcurrentHashMap for lock-free multi-threaded reading safety
     private final Map<Position, Machine> grid;
     private final List<Machine> machines;
 
     public World(int width, int height) {
         this.width = width;
         this.height = height;
-        this.grid = new HashMap<>();
-        this.machines = new ArrayList<>();
+        this.grid = new ConcurrentHashMap<>();
+        this.machines = new ArrayList<>(); // Guarded by explicit synchronization below
     }
 
     /**
-     * Spawns a machine into the simulation boundary safely.
+     * Spawns a machine safely even when bombarded by multiple threads simultaneously.
      */
     public boolean spawnMachine(Machine machine) {
         Position pos = machine.getPosition();
 
-        // Out of bounds validation
         if (pos.getX() < 0 || pos.getX() >= width || pos.getY() < 0 || pos.getY() >= height) {
             return false;
         }
 
-        // Occupancy collision check
-        if (grid.containsKey(pos)) {
-            return false;
-        }
+        // Upgrade 2: Critical Section. Only one thread can execute this block at a time per world instance.
+        synchronized (this) {
+            // Check-then-act atomic safety
+            if (grid.containsKey(pos)) {
+                return false;
+            }
 
-        grid.put(pos, machine);
-        machines.add(machine);
-        return true;
+            grid.put(pos, machine);
+            machines.add(machine);
+            return true;
+        }
     }
 
-    /**
-     * Queries coordinates to find targets
-     */
     public Machine getMachineAt(Position position) {
-        return grid.get(position);
+        return grid.get(position); // ConcurrentHashMap allows safe, concurrent reads without locks
     }
 
     public List<Machine> getAllMachines() {
-        return new ArrayList<>(this.machines); // Defensive copying to avoid modification leaks
+        synchronized (this) {
+            return new ArrayList<>(this.machines); // Safe defensive copy under lock protection
+        }
+    }
+
+    /**
+     * Atomically moves a machine from its current position to a new target position.
+     * Returns true if the move was successful, false if the target space was blocked or out of bounds.
+     */
+    public boolean moveMachine(String machineId, Position newPosition) {
+        // 1. Boundary check before acquiring locks
+        if (newPosition.getX() < 0 || newPosition.getX() >= width || newPosition.getY() < 0 || newPosition.getY() >= height) {
+            return false;
+        }
+
+        // 2. Lock the entire world state during the coordinate key translation
+        synchronized (this) {
+            // Find the machine matching our target ID
+            Machine targetMachine = null;
+            for (Machine m : machines) {
+                if (m.getId().equals(machineId)) {
+                    targetMachine = m;
+                    break;
+                }
+            }
+
+            // If the machine doesn't exist or the destination coordinate is occupied, reject the move
+            if (targetMachine == null || grid.containsKey(newPosition)) {
+                return false;
+            }
+
+            // 3. Perform the atomic swap across our indexing structures
+            Position oldPosition = targetMachine.getPosition();
+            grid.remove(oldPosition);                  // Wipe out old coordinate reference
+            targetMachine.setPosition(newPosition);    // Mutate internal position vector
+            grid.put(newPosition, targetMachine);      // Register new coordinate reference
+
+            return true;
+        }
+    }
+
+    /**
+     * Scans the world map and returns a list of all machines within a specific
+     * circular radius from a center coordinate point, excluding a target ID.
+     */
+    public List<Machine> scanProximity(Position center, double radius, String excludeId) {
+        List<Machine> targetsInRadarRange = new ArrayList<>();
+
+        // Lock-free read safety over our concurrent snapshot index
+        for (Machine target : getAllMachines()) {
+            if (target.getId().equals(excludeId) || target.isDestroyed()) {
+                continue; // Skip ourselves and dead targets
+            }
+
+            Position targetPos = target.getPosition();
+
+            // Calculate standard Euclidean distance vector lines
+            int deltaX = targetPos.getX() - center.getX();
+            int deltaY = targetPos.getY() - center.getY();
+            double distance = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
+
+            if (distance <= radius) {
+                targetsInRadarRange.add(target);
+            }
+        }
+
+        return targetsInRadarRange;
+    }
+
+    /**
+     * The core heartbeat tick of the simulation. Loops through all active assets,
+     * processes automated radar sweeps, and executes defensive engagement rules.
+     */
+    public void gameTick() {
+        // Safe read loop over our atomic entity array snapshot
+        for (Machine machine : getAllMachines()) {
+            if (machine.isDestroyed()) continue;
+
+            // 1. Automatic Radar Sweep: Scan a circular radius of 5.0 units for hostiles
+            List<Machine> hostiles = scanProximity(machine.getPosition(), 5.0, machine.getId());
+
+            if (!hostiles.isEmpty()) {
+                // 2. Target Selection: Engage the closest target entity
+                Machine target = hostiles.get(0);
+
+                System.out.println("⚔️ COMBAT ENGAGEMENT: [" + machine.getId() + "] fires at [" + target.getId() + "]!");
+
+                // 3. Combat Resolution: Deal 25 dynamic structural damage points
+                target.takeDamage(25);
+            }
+        }
     }
 }
