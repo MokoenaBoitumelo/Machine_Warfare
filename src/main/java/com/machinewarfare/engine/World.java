@@ -53,4 +53,40 @@ public class World {
             return new ArrayList<>(this.machines); // Safe defensive copy under lock protection
         }
     }
+
+    /**
+     * Atomically moves a machine from its current position to a new target position.
+     * Returns true if the move was successful, false if the target space was blocked or out of bounds.
+     */
+    public boolean moveMachine(String machineId, Position newPosition) {
+        // 1. Boundary check before acquiring locks
+        if (newPosition.getX() < 0 || newPosition.getX() >= width || newPosition.getY() < 0 || newPosition.getY() >= height) {
+            return false;
+        }
+
+        // 2. Lock the entire world state during the coordinate key translation
+        synchronized (this) {
+            // Find the machine matching our target ID
+            Machine targetMachine = null;
+            for (Machine m : machines) {
+                if (m.getId().equals(machineId)) {
+                    targetMachine = m;
+                    break;
+                }
+            }
+
+            // If the machine doesn't exist or the destination coordinate is occupied, reject the move
+            if (targetMachine == null || grid.containsKey(newPosition)) {
+                return false;
+            }
+
+            // 3. Perform the atomic swap across our indexing structures
+            Position oldPosition = targetMachine.getPosition();
+            grid.remove(oldPosition);                  // Wipe out old coordinate reference
+            targetMachine.setPosition(newPosition);    // Mutate internal position vector
+            grid.put(newPosition, targetMachine);      // Register new coordinate reference
+
+            return true;
+        }
+    }
 }
