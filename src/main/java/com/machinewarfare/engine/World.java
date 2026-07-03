@@ -89,4 +89,56 @@ public class World {
             return true;
         }
     }
+
+    /**
+     * Scans the world map and returns a list of all machines within a specific
+     * circular radius from a center coordinate point, excluding a target ID.
+     */
+    public List<Machine> scanProximity(Position center, double radius, String excludeId) {
+        List<Machine> targetsInRadarRange = new ArrayList<>();
+
+        // Lock-free read safety over our concurrent snapshot index
+        for (Machine target : getAllMachines()) {
+            if (target.getId().equals(excludeId) || target.isDestroyed()) {
+                continue; // Skip ourselves and dead targets
+            }
+
+            Position targetPos = target.getPosition();
+
+            // Calculate standard Euclidean distance vector lines
+            int deltaX = targetPos.getX() - center.getX();
+            int deltaY = targetPos.getY() - center.getY();
+            double distance = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
+
+            if (distance <= radius) {
+                targetsInRadarRange.add(target);
+            }
+        }
+
+        return targetsInRadarRange;
+    }
+
+    /**
+     * The core heartbeat tick of the simulation. Loops through all active assets,
+     * processes automated radar sweeps, and executes defensive engagement rules.
+     */
+    public void gameTick() {
+        // Safe read loop over our atomic entity array snapshot
+        for (Machine machine : getAllMachines()) {
+            if (machine.isDestroyed()) continue;
+
+            // 1. Automatic Radar Sweep: Scan a circular radius of 5.0 units for hostiles
+            List<Machine> hostiles = scanProximity(machine.getPosition(), 5.0, machine.getId());
+
+            if (!hostiles.isEmpty()) {
+                // 2. Target Selection: Engage the closest target entity
+                Machine target = hostiles.get(0);
+
+                System.out.println("⚔️ COMBAT ENGAGEMENT: [" + machine.getId() + "] fires at [" + target.getId() + "]!");
+
+                // 3. Combat Resolution: Deal 25 dynamic structural damage points
+                target.takeDamage(25);
+            }
+        }
+    }
 }
